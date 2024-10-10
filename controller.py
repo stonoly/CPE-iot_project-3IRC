@@ -5,7 +5,7 @@ import argparse
 import signal
 import sys
 import socket
-import SocketServer
+import socketserver
 import serial
 import threading
 
@@ -15,7 +15,7 @@ MICRO_COMMANDS = ["TL" , "LT"]
 FILENAME        = "values.txt"
 LAST_VALUE      = ""
 
-class ThreadedUDPRequestHandler(SocketServer.BaseRequestHandler):
+class ThreadedUDPRequestHandler(socketserver.BaseRequestHandler):
 
     def handle(self):
         data = self.request[0].strip()
@@ -32,7 +32,7 @@ class ThreadedUDPRequestHandler(SocketServer.BaseRequestHandler):
                         else:
                                 print("Unknown message: ",data)
 
-class ThreadedUDPServer(SocketServer.ThreadingMixIn, SocketServer.UDPServer):
+class ThreadedUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
     pass
 
 
@@ -56,7 +56,7 @@ def initUART():
         ser.rtscts = False     #disable hardware (RTS/CTS) flow control
         ser.dsrdtr = False       #disable hardware (DSR/DTR) flow control
         #ser.writeTimeout = 0     #timeout for write
-        print 'Starting Up Serial Monitor'
+        print('Starting Up Serial Monitor')
         try:
                 ser.open()
         except serial.SerialException:
