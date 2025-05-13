@@ -66,7 +66,7 @@ def initUART():
 
 
 def sendUARTMessage(msg):
-    ser.write(msg)
+    ser.write(msg.encode())
     print("Message <" + msg + "> sent to micro-controller." )
 
 
@@ -87,7 +87,8 @@ if __name__ == '__main__':
                 while ser.isOpen() : 
                         # time.sleep(100)
                         if (ser.inWaiting() > 0): # if incoming bytes are waiting 
-                                data_str = ser.read(ser.inWaiting()) 
+                                data_bytes = ser.read(ser.inWaiting())
+                                data_str = data_bytes.decode()
                                 f.write(data_str)
                                 LAST_VALUE = data_str
                                 print(data_str)
