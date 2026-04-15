@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  grafana_dashboard:
+    image: grafana/grafana-oss:latest
+    container_name: supervision_iot_grafana
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      # Ce plugin est indispensable pour lire du SQLite
+      - GF_INSTALL_PLUGINS=frser-sqlite-datasource
+    volumes:
+      # On relie ton dossier actuel (./) vers un dossier interne à Grafana (en lecture seule :ro)
+      - ./:/var/lib/grafana/donnees_iot:ro
