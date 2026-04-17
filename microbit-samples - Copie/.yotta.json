@@ -1,0 +1,6 @@
+{
+  "build": {
+    "target": "bbc-microbit-classic-gcc,yotta_targets/bbc-microbit-classic-gcc",
+    "targetSetExplicitly": true
+  }
+}
