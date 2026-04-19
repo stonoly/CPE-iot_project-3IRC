@@ -42,7 +42,6 @@ void reception_trame_radio(MicroBitEvent) {
         memcpy(&val_lum, &tampon_rx[12], 4);
 
         // Formatage en JSON et envoi via UART au script Python
-        // J'ai espacé différemment la chaîne JSON pour te démarquer, mais Python la lira parfaitement
         uBit.serial.printf("{\"t\": %d, \"h\": %d, \"p\": %d, \"l\": %d}\r\n", val_temp, val_hum, val_press, val_lum);
     }
 }
@@ -58,31 +57,35 @@ int main() {
     // Lancement de l'écoute en arrière-plan
     uBit.messageBus.listen(MICROBIT_ID_RADIO, MICROBIT_RADIO_EVT_DATAGRAM, reception_trame_radio);
 
-    // Message d'initialisation sur la matrice LED (différent de celui de ton ami)
+    // Message d'initialisation sur la matrice LED
     uBit.display.scroll("GW READY"); 
 
     while (true) {
-        // Écoute du port série pour recevoir les instructions d'affichage ("THL", "PH", etc.)
+        // Écoute du port série pour recevoir les instructions d'affichage
         ManagedString instruction = uBit.serial.readUntil("\r\n");
 
         if (instruction.length() > 0) {
             int longueur_cmd = instruction.length();
             
-            // On accepte jusqu'à 4 lettres (T, H, L, P)
-            if (longueur_cmd <= 4) {
-                uint8_t tampon_tx[6]; 
-                tampon_tx[0] = 0xB2; // Identifiant réseau pour l'envoi de configuration
+            // --- CORRECTION ICI ---
+            // On accepte jusqu'à 5 pour tolérer le \r (retour chariot) envoyé par certains terminaux
+            if (longueur_cmd <= 5) {
+                uint8_t tampon_tx[7]; // Tampon légèrement agrandi pour la sécurité
+                tampon_tx[0] = 0xB2; // Identifiant réseau pour la config
                 
-                // Copie adaptative des caractères (corrige le bug des 3 lettres max)
-                memcpy(&tampon_tx[1], instruction.toCharArray(), longueur_cmd);
+                // On s'assure de ne pas envoyer plus de 4 lettres au capteur
+                int taille_utile = (longueur_cmd > 4) ? 4 : longueur_cmd;
                 
-                // Envoi de la trame radio au Micro:bit capteur
-                uBit.radio.datagram.send(tampon_tx, longueur_cmd + 1);
+                // Copie des caractères de commande
+                memcpy(&tampon_tx[1], instruction.toCharArray(), taille_utile);
+                
+                // Envoi de la trame radio au Micro:bit capteur (ID + lettres utiles)
+                uBit.radio.datagram.send(tampon_tx, taille_utile + 1);
                 
                 // Signal ACK renvoyé au serveur Python
                 uBit.serial.printf("ACK: %s\r\n", (char*)instruction.toCharArray());
                 
-                // Animation LED : affiche brièvement la première lettre de l'ordre
+                // Animation LED : affiche brièvement la première lettre
                 uBit.display.print(instruction.charAt(0));
                 uBit.sleep(250);
                 uBit.display.clear();
@@ -91,7 +94,6 @@ int main() {
             }
         }
         
-        // Légère pause pour éviter la surcharge du processeur
         uBit.sleep(20); 
     }
     

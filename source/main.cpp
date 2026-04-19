@@ -1,49 +1,47 @@
 #include "MicroBit.h"
-    
-MicroBit uBit;
+#include "./drivers/ssd1306.h"
+#include "./drivers/bme280.h"
+#include "./drivers/tsl256x.h" // N'oublie pas d'inclure la librairie pour la luminosité !
 
-// --- FONCTION DE SÉCURITÉ ---
-// Calcul de la somme de contrôle (Checksum) pour vérifier l'intégrité de la trame
-uint8_t calculer_somme_controle(uint8_t* donnees, int taille) {
-    uint8_t somme = 0;
-    for (int idx = 0; idx < taille; idx++) {
-        somme += donnees[idx];
+MicroBit uBit;
+MicroBitI2C bus_i2c(MICROBIT_PIN_P20, MICROBIT_PIN_P19);
+MicroBitPin broche_P0(MICROBIT_ID_IO_P0, MICROBIT_PIN_P0, PIN_CAPABILITY_DIGITAL_OUT);
+
+// Pointeurs vers nos capteurs et l'écran
+ssd1306* ecran_oled;
+bme280* capteur_meteo;
+tsl256x* capteur_lumiere;
+
+// Configuration par défaut au démarrage
+ManagedString mode_actif = "THLP"; 
+
+// --- FONCTION DE SÉCURITÉ (identique à la passerelle) ---
+uint8_t calculer_crc_trame(uint8_t* donnees, int longueur) {
+    uint8_t crc_val = 0;
+    for (int idx = 0; idx < longueur; idx++) {
+        crc_val += donnees[idx];
     }
-    return somme;
+    return crc_val;
 }
 
-// --- RÉCEPTION RADIO ---
-// Callback déclenché automatiquement dès que la passerelle reçoit un signal sans fil
-void reception_trame_radio(MicroBitEvent) {
+// --- RÉCEPTION DES ORDRES D'AFFICHAGE ---
+void reception_nouvel_ordre(MicroBitEvent) {
     uint8_t tampon_rx[32];
-    int octets_recus = uBit.radio.datagram.recv(tampon_rx, 32);
+    int taille_reçue = uBit.radio.datagram.recv(tampon_rx, 32);
 
-    // On s'assure d'avoir la bonne taille (16 data + 1 CRC = 17) et le bon identifiant (0xA1)
-    if (octets_recus == 17 && tampon_rx[0] == 0xA1) {
+    // On vérifie que le message vient bien de la passerelle (identifiant 0xB2 pour la config)
+    if (taille_reçue >= 2 && tampon_rx[0] == 0xB2) {
+        char nouvel_ordre[5] = {0}; // Prévu pour 4 lettres max + le caractère de fin de chaîne
+        int nb_lettres = taille_reçue - 1; 
         
-        uint8_t crc_calcule = calculer_somme_controle(tampon_rx, 16);
-        
-        // Vérification du bit de parité (CRC)
-        if (crc_calcule != tampon_rx[16]) {
-            uBit.serial.printf("{\"err\":\"Erreur de checksum CRC\"}\r\n");
-            return;
+        if(nb_lettres > 4) nb_lettres = 4; // Sécurité anti-débordement
+
+        // Extraction dynamique des lettres reçues
+        for(int j = 0; j < nb_lettres; j++) {
+            nouvel_ordre[j] = (char)tampon_rx[j + 1];
         }
-
-        // Création des variables de stockage temporaire
-        int32_t val_temp;
-        uint16_t val_hum;
-        uint32_t val_press;
-        uint32_t val_lum;
-
-        // Extraction des valeurs à partir des indices de la trame
-        memcpy(&val_temp, &tampon_rx[2], 4);
-        memcpy(&val_hum, &tampon_rx[6], 2);
-        memcpy(&val_press, &tampon_rx[8], 4);
-        memcpy(&val_lum, &tampon_rx[12], 4);
-
-        // Formatage en JSON et envoi via UART au script Python
-        // J'ai espacé différemment la chaîne JSON pour te démarquer, mais Python la lira parfaitement
-        uBit.serial.printf("{\"t\": %d, \"h\": %d, \"p\": %d, \"l\": %d}\r\n", val_temp, val_hum, val_press, val_lum);
+        
+        mode_actif = ManagedString(nouvel_ordre);
     }
 }
 
@@ -51,49 +49,90 @@ void reception_trame_radio(MicroBitEvent) {
 int main() {
     uBit.init();
     uBit.radio.enable();
-    
-    // Configuration du canal de communication
-    uBit.radio.setGroup(77); 
+    uBit.radio.setGroup(77); // Doit être identique à la passerelle
 
-    // Lancement de l'écoute en arrière-plan
-    uBit.messageBus.listen(MICROBIT_ID_RADIO, MICROBIT_RADIO_EVT_DATAGRAM, reception_trame_radio);
+    // Initialisation des modules externes
+    ecran_oled = new ssd1306(&uBit, &bus_i2c, &broche_P0);
+    capteur_meteo = new bme280(&uBit, &bus_i2c);
+    capteur_lumiere = new tsl256x(&uBit, &bus_i2c, TSL256x_ADDR, TSL256x_PACKAGE_T, TSL256x_LOW_GAIN, TSL256x_INTEGRATION_100ms);
 
-    // Message d'initialisation sur la matrice LED (différent de celui de ton ami)
-    uBit.display.scroll("GW READY"); 
+    // Mise en écoute de la radio
+    uBit.messageBus.listen(MICROBIT_ID_RADIO, MICROBIT_RADIO_EVT_DATAGRAM, reception_nouvel_ordre);
+
+    // Petit message de démarrage personnalisé
+    ecran_oled->clear();
+    ecran_oled->display_line(0, 0, "SYSTEME ACTIF");
+    ecran_oled->update_screen();
+    uBit.sleep(1000);
 
     while (true) {
-        // Écoute du port série pour recevoir les instructions d'affichage ("THL", "PH", etc.)
-        ManagedString instruction = uBit.serial.readUntil("\r\n");
+        // 1. LECTURE BRUTE DES CAPTEURS
+        uint32_t press_brute = 0;
+        int32_t temp_brute = 0;
+        uint16_t hum_brute = 0;
+        capteur_meteo->sensor_read(&press_brute, &temp_brute, &hum_brute);
 
-        if (instruction.length() > 0) {
-            int longueur_cmd = instruction.length();
+        // 2. COMPENSATION POUR ENVOI RADIO
+        int32_t val_t = capteur_meteo->compensate_temperature(temp_brute);
+        uint16_t val_h = capteur_meteo->compensate_humidity(hum_brute);
+        uint32_t val_p = capteur_meteo->compensate_pressure(press_brute);
+
+        // Luminosité (directement exploitable)
+        uint32_t val_l = 0;
+        capteur_lumiere->sensor_read(NULL, NULL, &val_l);
+
+        // 3. AFFICHAGE OLED (valeurs divisées par 100 pour la lisibilité)
+        int t_ecran = val_t / 100;
+        int h_ecran = val_h / 100;
+        int p_ecran = val_p / 100;
+
+        ecran_oled->clear();
+        ManagedString entete = ManagedString("AFFICHAGE: ") + mode_actif;
+        ecran_oled->display_line(0, 0, (char*)entete.toCharArray());
+
+        int ligne = 1;
+        // Parcours de la chaîne d'ordre pour afficher les capteurs dans le bon ordre
+        for (int k = 0; k < mode_actif.length(); k++) {
+            char commande = mode_actif.charAt(k);
             
-            // On accepte jusqu'à 4 lettres (T, H, L, P)
-            if (longueur_cmd <= 4) {
-                uint8_t tampon_tx[6]; 
-                tampon_tx[0] = 0xB2; // Identifiant réseau pour l'envoi de configuration
-                
-                // Copie adaptative des caractères (corrige le bug des 3 lettres max)
-                memcpy(&tampon_tx[1], instruction.toCharArray(), longueur_cmd);
-                
-                // Envoi de la trame radio au Micro:bit capteur
-                uBit.radio.datagram.send(tampon_tx, longueur_cmd + 1);
-                
-                // Signal ACK renvoyé au serveur Python
-                uBit.serial.printf("ACK: %s\r\n", (char*)instruction.toCharArray());
-                
-                // Animation LED : affiche brièvement la première lettre de l'ordre
-                uBit.display.print(instruction.charAt(0));
-                uBit.sleep(250);
-                uBit.display.clear();
-            } else {
-                uBit.serial.printf("{\"err\":\"Instruction trop longue\"}\r\n");
+            if (commande == 'T') {
+                ManagedString txt = ManagedString("Temp: ") + ManagedString(t_ecran) + " C";
+                ecran_oled->display_line(ligne++, 0, (char*)txt.toCharArray());
+            } 
+            else if (commande == 'H') {
+                ManagedString txt = ManagedString("Humidite: ") + ManagedString(h_ecran) + " %";
+                ecran_oled->display_line(ligne++, 0, (char*)txt.toCharArray());
+            } 
+            else if (commande == 'P') {
+                ManagedString txt = ManagedString("Press: ") + ManagedString(p_ecran) + " hPa";
+                ecran_oled->display_line(ligne++, 0, (char*)txt.toCharArray());
+            } 
+            else if (commande == 'L') {
+                ManagedString txt = ManagedString("Lum: ") + ManagedString((int)val_l) + " lux";
+                ecran_oled->display_line(ligne++, 0, (char*)txt.toCharArray());
             }
         }
-        
-        // Légère pause pour éviter la surcharge du processeur
-        uBit.sleep(20); 
+        ecran_oled->update_screen();
+
+        // 4. CONSTRUCTION ET ENVOI DE LA TRAME RADIO
+        uint8_t trame_tx[17];
+        trame_tx[0] = 0xA1; // ID d'envoi de mesures (attendu par la passerelle)
+        trame_tx[1] = 0x01; // Version de la trame
+
+        // Injection des valeurs brutes dans le tableau d'octets
+        memcpy(&trame_tx[2], &val_t, 4);
+        memcpy(&trame_tx[6], &val_h, 2);
+        memcpy(&trame_tx[8], &val_p, 4);
+        memcpy(&trame_tx[12], &val_l, 4);
+
+        // Ajout du bit de parité à la toute fin
+        trame_tx[16] = calculer_crc_trame(trame_tx, 16);
+
+        uBit.radio.datagram.send(trame_tx, 17);
+
+        // Pause de 2 secondes avant la prochaine lecture
+        uBit.sleep(2000); 
     }
-    
+
     release_fiber();
 }
