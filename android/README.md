@@ -43,11 +43,17 @@ L'application répond aux besoins listés dans le sujet :
 
 L'écran principal (`activity_main.xml`) est composé de :
 
-1. **Adresse IP du serveur** + **Port** (champs éditables, valeurs par défaut `192.168.1.1` / `10000`).
+1. **Adresse IP du serveur** + **Port** (champs éditables, valeurs par défaut `10.0.2.2` / `10000`).
+   - `10.0.2.2` est l'alias spécial pointant vers le `localhost` du PC hôte **depuis l'émulateur Android**.
+   - Pour un téléphone physique, remplacer par l'IP locale du PC (ex : `192.168.1.42`).
 2. **Bouton « Démarrer / Arrêter la Réception »** : démarre ou arrête l'écoute UDP sur le port indiqué.
 3. **Zone d'affichage des données reçues** : affiche le dernier message reçu depuis le serveur.
 4. **Champ « Ordre d'affichage »** + **Bouton « Envoyer Configuration »** : envoie la configuration au serveur.
 5. **Bouton « Actualiser les Valeurs »** : envoie la requête `getValues()` au serveur.
+
+> ⚠️ Les boutons d'envoi (Configuration / Actualiser) nécessitent que l'écoute soit démarrée au préalable :
+> l'envoi et la réception partagent le **même socket UDP**. Si tu cliques avant d'avoir démarré la réception,
+> un toast `Démarrez d'abord la réception` s'affiche.
 
 Toutes les chaînes de l'interface sont externalisées dans `app/src/main/res/values/strings.xml` (FR).
 
@@ -55,7 +61,9 @@ Toutes les chaînes de l'interface sont externalisées dans `app/src/main/res/va
 
 ## 4. Architecture du code
 
-L'application est volontairement minimaliste : **une seule activité** suffit à couvrir les besoins du sujet.
+L'application repose sur une **architecture multi-threads producteur / consommateur**, inspirée des
+patrons vus en cours. Le découpage est volontairement simple : **une activité** + **deux threads
+dédiés au réseau** + **deux mécanismes de communication inter-threads**.
 
 ```
 android/
@@ -64,7 +72,9 @@ android/
 │   └── src/main/
 │       ├── AndroidManifest.xml                   # Permissions INTERNET / ACCESS_NETWORK_STATE
 │       ├── java/fr/cpe/miniarchi/
-│       │   └── MainActivity.java                 # Activité principale (UI + logique UDP)
+│       │   ├── MainActivity.java                 # Activité principale (UI + orchestration)
+│       │   ├── NetworkThread.java                # Thread d'envoi UDP (consomme une BlockingQueue)
+│       │   └── NetworkReceiveThread.java         # Thread de réception UDP (notifie via un Listener)
 │       └── res/
 │           ├── layout/activity_main.xml          # Interface graphique
 │           ├── values/strings.xml                # Chaînes en français
@@ -75,16 +85,77 @@ android/
 └── gradlew / gradlew.bat                         # Wrapper Gradle
 ```
 
-### Points techniques notables (`MainActivity.java`)
+### Vue d'ensemble du flot de données
 
-- **Émission UDP** (`sendUDP`) :
-  - Exécutée dans un `ExecutorService` (le réseau est interdit sur le thread UI Android).
-  - Force l'utilisation d'une adresse **IPv4** (`Inet4Address`) — utile en simulateur où une adresse IPv6 peut être résolue par défaut.
-- **Réception UDP** (`startListening` / `stopListening`) :
-  - Socket lié à `0.0.0.0` pour accepter tous les paquets entrants sur le port choisi.
-  - Boucle de réception dans un thread séparé, fermeture propre du socket en cas d'arrêt.
-  - Mise à jour de l'UI via un `Handler` lié au `Looper` principal.
-- **Cycle de vie** : libération des ressources réseau et du pool de threads dans `onDestroy()`.
+```
+                ┌─────────────────────────────────────────────┐
+                │              MainActivity (UI)              │
+                └─────────────────────────────────────────────┘
+                       │ add("ip:port:msg")          ▲
+                       ▼                             │ listener.onEventInMyThread()
+                ┌──────────────────┐         ┌──────────────────────┐
+                │ BlockingQueue<…> │         │  MyThreadEventListener │
+                └──────────────────┘         └──────────────────────┘
+                       │ take()                      ▲
+                       ▼                             │
+                ┌──────────────────┐         ┌──────────────────────┐
+                │  NetworkThread   │         │ NetworkReceiveThread │
+                │    (envoi)       │         │     (réception)      │
+                └──────────────────┘         └──────────────────────┘
+                       │ send()                      ▲ receive()
+                       └──────────────┬──────────────┘
+                                      ▼
+                              ┌──────────────┐
+                              │ DatagramSocket│
+                              │  (partagé)    │
+                              └──────────────┘
+```
+
+### Détail des composants
+
+#### `NetworkThread.java` — thread d'**envoi**
+- Hérite de `Thread`.
+- Bloque sur `queue.take()` (attente passive, zéro CPU) tant que l'UI ne pousse rien.
+- Format attendu dans la queue : `"ip:port:message"` (split sur les 2 premiers `:` uniquement).
+- Émet le datagramme UDP via le `DatagramSocket` partagé.
+- S'arrête proprement à l'`interrupt()` (sort de `take()` via `InterruptedException`).
+
+#### `NetworkReceiveThread.java` — thread de **réception**
+- Hérite de `Thread`.
+- Boucle infinie sur `UDPSocket.receive()` (bloquant).
+- Définit une interface `MyThreadEventListener` ; à chaque paquet reçu, appelle
+  `listener.onEventInMyThread(data)` avec le contenu décodé et `trim()`.
+- S'arrête proprement quand on **ferme le socket** depuis l'extérieur : `receive()` lève alors une
+  `SocketException` que l'on attrape pour sortir.
+
+#### `MainActivity.java` — orchestration
+- Maintient une `BlockingQueue<String>` partagée (`LinkedBlockingQueue`).
+- Au clic « Démarrer la Réception » :
+  - Crée le `DatagramSocket` bindé sur `0.0.0.0:<port>` (accepte tout paquet entrant).
+  - Démarre `NetworkThread` et `NetworkReceiveThread` en leur passant le socket et, pour l'un, la queue,
+    pour l'autre, le listener.
+- Au clic « Arrêter la Réception » :
+  - `threadNetwork.interrupt()` puis `UDPSocket.close()` → les deux threads se terminent proprement.
+- Sur les boutons d'envoi (`Envoyer Configuration` / `Actualiser`) :
+  - Valide qu'on est en mode IPv4 (`Inet4Address`) pour éviter les soucis d'émulateur dual-stack.
+  - Pousse `"ip:port:message"` dans la queue.
+- Le listener reçoit les paquets dans un thread non-UI ; il utilise
+  `Handler(Looper.getMainLooper()).post(…)` pour mettre à jour `receivedDataTextView` sur le thread UI.
+
+### Pourquoi cette archi ?
+
+| Avantage                                  | Détail                                                                                          |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| **Séparation des responsabilités**        | L'UI ne touche jamais directement au socket. Chaque thread a un rôle unique et lisible.         |
+| **Découplage producteur / consommateur**  | L'UI peut empiler des envois à n'importe quel rythme, le `NetworkThread` les consomme à son rythme. |
+| **Attente passive**                       | `BlockingQueue.take()` et `DatagramSocket.receive()` ne consomment **aucun CPU** en attente.    |
+| **Réutilisation du socket**               | Un seul socket pour l'envoi et la réception → le serveur peut répondre au port source.          |
+| **Pattern Observer**                      | Le listener rend `NetworkReceiveThread` indépendant de l'UI (testable, réutilisable).           |
+
+### Cycle de vie
+
+`onDestroy()` appelle `stopListening()` qui interrompt les threads et ferme le socket : aucune fuite de
+ressource au changement d'orientation ou à la fermeture de l'app.
 
 ---
 
@@ -142,12 +213,27 @@ un émulateur.
 1. Démarrer le serveur sur le PC (cf. dossier `serveur/`).
 2. Lancer l'application sur le téléphone / l'émulateur.
 3. Renseigner :
-   - l'**adresse IP** du serveur (ex : `192.168.1.42` en réseau réel, `10.0.2.2` en émulateur),
+   - l'**adresse IP** du serveur :
+     - `10.0.2.2` si l'app tourne sur l'**émulateur** Android Studio (alias spécial vers le `localhost` du PC),
+     - l'IP locale du PC (ex : `192.168.1.42`) si l'app tourne sur un **téléphone physique** sur le même Wi-Fi.
    - le **port** d'écoute du serveur (par défaut `10000`).
-4. Appuyer sur **« Démarrer la Réception »** : l'application écoute désormais les paquets UDP entrants.
-5. Pour configurer l'ordre d'affichage, saisir une chaîne (ex : `TLH`) puis appuyer sur **« Envoyer Configuration »**.
-6. Le bouton **« Actualiser les Valeurs »** envoie `getValues()` au serveur ; la réponse s'affiche dans la zone
-   « Données reçues ».
+4. Appuyer sur **« Démarrer la Réception »** : l'application crée le socket UDP, démarre les deux threads
+   (`NetworkThread` + `NetworkReceiveThread`) et écoute les paquets UDP entrants. Le bouton passe en
+   « Arrêter la Réception ».
+5. Pour configurer l'ordre d'affichage, saisir une chaîne (ex : `TLH`) puis appuyer sur
+   **« Envoyer Configuration »**. La chaîne `ip:port:TLH` est poussée dans la `BlockingQueue` ; le
+   `NetworkThread` la consomme et émet le datagramme UDP.
+6. Le bouton **« Actualiser les Valeurs »** envoie `getValues()` au serveur ; la réponse s'affiche dans
+   la zone « Données reçues ».
+
+### Dépannage rapide
+
+| Symptôme                                     | Cause probable                                                       |
+| -------------------------------------------- | -------------------------------------------------------------------- |
+| Toast « Démarrez d'abord la réception »      | Tu as cliqué sur Envoyer avant de démarrer l'écoute.                 |
+| Log `Envoyé vers …` OK mais serveur muet     | Mauvaise IP : si tu es sur émulateur, utilise `10.0.2.2`, pas `127.0.0.1`. |
+| `BindException: Address already in use`      | Le port est déjà utilisé (autre instance, autre app, etc.).          |
+| Rien n'arrive dans la zone « Données reçues » | Le serveur ne renvoie pas sur le port source, ou pare-feu PC actif.  |
 
 ---
 
