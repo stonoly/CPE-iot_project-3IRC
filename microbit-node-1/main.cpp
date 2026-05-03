@@ -50,21 +50,16 @@ MicroBitPin  resetPin(MICROBIT_ID_IO_P0, MICROBIT_PIN_P0, PIN_CAPABILITY_DIGITAL
 #define NUM_CAPTEUR    1        // ← numéro unique de ce capteur
 #define SEND_INTERVAL  5000     // ms entre deux envois
 
-// =========================================================================
-// CLÉ RADIO PARTAGÉE — IDENTIQUE dans les deux firmwares
-// =========================================================================
 static const uint8_t CLE_RADIO[8] = {
     0x49, 0x6F, 0x54, 0x32,
     0x30, 0x32, 0x36, 0x21   // "IoT2026!"
 };
 
-// Nonce anti-rejeu 2 octets, initialisé aléatoirement au démarrage
-static uint16_t nonce = 0;
+static uint16_t nonce      = 0;
+static uint32_t etat_prng  = 0;
 
-// Configuration d'affichage courante
 char displayConfig[8] = "TLHP";
 
-// Dernières valeurs capteurs
 int      g_temp = 0;    // en 0.01 °C
 uint32_t g_lux  = 0;    // en lux
 uint32_t g_hum  = 0;    // en 0.01 %rH
@@ -72,10 +67,10 @@ uint32_t g_pres = 0;    // en hPa
 
 
 // =========================================================================
-// PRNG XORSHIFT32
+// Initialise le PRNG à partir des 4 premiers octets de CLE_RADIO
+// et du nonce. Le nonce est mélangé deux fois pour que deux nonces
+// proches ne produisent pas des flux trop similaires.
 // =========================================================================
-static uint32_t etat_prng = 0;
-
 void initialiser_prng(uint16_t nonce_local) {
     etat_prng =
         ((uint32_t)CLE_RADIO[0] << 24) ^
@@ -90,6 +85,10 @@ void initialiser_prng(uint16_t nonce_local) {
     }
 }
 
+// =========================================================================
+// Génère le prochain mot 32 bits du flux pseudo-aléatoire.
+// On prend uniquement l'octet de poids faible comme masque de chiffrement.
+// =========================================================================
 uint32_t xorshift32() {
     uint32_t x = etat_prng;
     x ^= x << 13;
@@ -99,9 +98,10 @@ uint32_t xorshift32() {
     return x;
 }
 
-
 // =========================================================================
-// CRC16
+// CRC16 Modbus sur `taille` octets.
+// Permet à la passerelle de détecter toute corruption de la trame
+// avant même de tenter le déchiffrement.
 // =========================================================================
 uint16_t calculer_crc16(uint8_t* data, int taille) {
     uint16_t crc = 0xFFFF;
@@ -117,10 +117,11 @@ uint16_t calculer_crc16(uint8_t* data, int taille) {
     return crc;
 }
 
-
 // =========================================================================
-// RÉCEPTION CONFIG DEPUIS LA PASSERELLE
-// Format : [0xB2][nonce_cfg 2o][payload XORé]
+// Callback radio déclenché à la réception d'une trame de config (0xB2).
+// Déchiffre les lettres avec le nonce embarqué dans la trame,
+// valide qu'elles appartiennent à {T, L, H, P}, puis met à jour
+// l'ordre d'affichage sur l'OLED.
 // =========================================================================
 void onRadioReceive(MicroBitEvent) {
     uint8_t tampon_rx[32];
@@ -138,7 +139,6 @@ void onRadioReceive(MicroBitEvent) {
         return;
     }
 
-    // Déchiffrement XORSHIFT32
     char cfg_dechiffree[8];
     initialiser_prng(nonce_cfg);
 
@@ -148,7 +148,6 @@ void onRadioReceive(MicroBitEvent) {
     }
     cfg_dechiffree[nb_lettres] = '\0';
 
-    // Validation des lettres
     for (int i = 0; i < nb_lettres; i++) {
         char c = cfg_dechiffree[i];
         if (c != 'T' && c != 'L' && c != 'H' && c != 'P') {
@@ -156,20 +155,18 @@ void onRadioReceive(MicroBitEvent) {
         }
     }
 
-    // Mise à jour config
     for (int i = 0; i <= nb_lettres; i++) {
         displayConfig[i] = cfg_dechiffree[i];
     }
 
-    // Feedback visuel
     uBit.display.image.setPixelValue(4, 4, 255);
     uBit.sleep(150);
     uBit.display.image.setPixelValue(4, 4, 0);
 }
 
-
 // =========================================================================
-// OLED
+// Rafraîchit l'écran OLED en affichant les capteurs dans l'ordre
+// défini par displayConfig (ex: "TLH" → température, luminosité, humidité).
 // =========================================================================
 void updateOLED(ssd1306& screen) {
     screen.clear();
@@ -200,23 +197,11 @@ void updateOLED(ssd1306& screen) {
     screen.update_screen();
 }
 
-
 // =========================================================================
-// ENVOI TRAME RADIO CHIFFRÉE
-//
-// Layout payload brut (16 octets) :
-//   [0]      num_capteur  uint8_t
-//   [1..4]   temp         int32_t
-//   [5..6]   hum          uint16_t
-//   [7..10]  press        uint32_t
-//   [11..14] lum          uint32_t
-//   [15]     padding      0x00
-//
-// Trame finale (21 octets) :
-//   [0]      0xA1
-//   [1..2]   nonce
-//   [3..18]  payload chiffré
-//   [19..20] CRC16
+// Sérialise les quatre valeurs capteurs + le numéro de capteur dans
+// un payload de 16 octets, chiffre avec XORSHIFT32 + nonce courant,
+// calcule le CRC16, puis envoie la trame de 21 octets par radio.
+// Le nonce est incrémenté après chaque envoi.
 // =========================================================================
 void envoyer_trame_capteurs() {
     uint8_t trame[21];
@@ -224,7 +209,6 @@ void envoyer_trame_capteurs() {
     trame[0] = 0xA1;
     memcpy(&trame[1], &nonce, 2);
 
-    // Sérialisation payload brut
     uint8_t payload[16];
     int32_t  t = (int32_t)g_temp;
     uint16_t h = (uint16_t)(g_hum & 0xFFFF);
@@ -236,16 +220,14 @@ void envoyer_trame_capteurs() {
     memcpy(&payload[5],  &h, 2);
     memcpy(&payload[7],  &p, 4);
     memcpy(&payload[11], &l, 4);
-    payload[15] = 0x00;  // padding
+    payload[15] = 0x00;
 
-    // Chiffrement XORSHIFT32
     initialiser_prng(nonce);
     for (int i = 0; i < 16; i++) {
         uint8_t masque = (uint8_t)(xorshift32() & 0xFF);
         trame[3 + i] = payload[i] ^ masque;
     }
 
-    // CRC16 sur les 19 premiers octets
     uint16_t crc = calculer_crc16(trame, 19);
     memcpy(&trame[19], &crc, 2);
 
@@ -261,7 +243,6 @@ void envoyer_trame_capteurs() {
 int main() {
     uBit.init();
 
-    // Nonce initialisé aléatoirement
     nonce = uBit.random(65535);
 
     uBit.radio.enable();
@@ -284,7 +265,6 @@ int main() {
     uBit.sleep(2000);
 
     while (true) {
-        // Lecture BME280
         uint32_t rawPres = 0;
         int32_t  rawTemp = 0;
         uint16_t rawHum  = 0;
@@ -294,19 +274,13 @@ int main() {
         g_pres = bme.compensate_pressure((int)rawPres) / 100;
         g_hum  = bme.compensate_humidity((int)rawHum);
 
-        // Lecture TSL256x
         uint16_t comb = 0, ir = 0;
         tsl.sensor_read(&comb, &ir, &g_lux);
 
-        // Envoi radio chiffré
         envoyer_trame_capteurs();
 
-        // Feedback LED
         uBit.display.image.setPixelValue(2, 2, 255);
-
-        // Mise à jour OLED
         updateOLED(screen);
-
         uBit.sleep(100);
         uBit.display.image.setPixelValue(2, 2, 0);
 
