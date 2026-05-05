@@ -2,7 +2,7 @@
 
 Mini-projet du module **Développement embarqué et IoT** (CPE Lyon, promotion 2026).
 
-L'objectif est de déployer une **architecture IoT complète de bout en bout** : un objet capteur micro:bit
+L'objectif est de mettre en place une architecture IOT complète : un objet capteur micro:bit
 mesure la température / humidité / pression / luminosité d'un bureau, transmet ses relevés en radio à
 une passerelle, qui les remonte à un serveur Python via USB. Une application Android permet alors de
 consulter ces relevés et de reconfigurer à distance l'ordre d'affichage des données sur l'écran OLED
@@ -35,7 +35,7 @@ propre README détaillé :
 
 ## 2. Fonctionnalités globales
 
-Reprises directement du sujet, les capacités couvertes par l'ensemble du projet sont :
+Voici les fonctionnalités que nous avons implémentées :
 
 - **Mesures multi-capteurs** (température, humidité, pression, luminosité) sur l'objet déployé.
 - **Communication radio 2.4 GHz** sécurisée entre l'objet et la passerelle.
@@ -45,28 +45,41 @@ Reprises directement du sujet, les capacités couvertes par l'ensemble du projet
 - **Affichage configurable** sur l'écran OLED de l'objet (lettres `T`, `L`, `H`, `P` dans l'ordre voulu).
 - **Communication bidirectionnelle** Android ↔ serveur ↔ passerelle ↔ objet.
 - **Gestion multi-objets** : chaque trame inclut un `num_capteur`, et la base s'auto-alimente.
+- **Visualisation web** des données via un dashboard Grafana (courbes, jauges, historique).
+- **Journal de trafic** : toutes les communications (UART et UDP) sont tracées dans la base de données.
 
 ---
 
 ## 3. Sécurité applicative
 
-Le sujet insiste sur la nécessité d'un protocole sécurisé en vue d'un déploiement multi-bureaux.
-Trois mécanismes complémentaires sont implémentés tout au long de la chaîne :
+Le sujet demandant un protocole sécurisé pour un déploiement multi-bureaux,
+on a implémenté trois mécanismes sur les communications radio et UART.
 
-1. **Confidentialité** — chaque payload (radio et UART) est chiffré par XOR contre un flux pseudo-aléatoire
-   généré par **XORSHIFT32**, initialisé avec une clé partagée (`CLE_RADIO` pour la radio, `CLE_UART` pour
-   l'UART) et le nonce du paquet.
-2. **Intégrité** — un **CRC16** (polynôme `0xA001`) protège les trames radio et UART contre les
-   altérations ; toute trame avec CRC invalide est rejetée et journalisée.
-3. **Anti-rejeu** — un **nonce 16 bits** est transporté avec chaque trame. La passerelle conserve le
-   dernier nonce vu et rejette tout paquet dupliqué.
+1. **Confidentialité** — les payloads sont chiffrés par XOR avec un flux
+   généré par XORSHIFT32, initialisé à partir d'une clé partagée et du nonce
+   de la trame. Deux trames avec le même contenu ne produisent donc jamais
+   le même résultat chiffré.
+2. **Intégrité** — un CRC16 (polynôme `0xA001`) est calculé sur chaque trame.
+   Si les données ont été altérées en transit, le CRC ne correspond plus et
+   la trame est rejetée puis journalisée.
+3. **Anti-rejeu** — chaque trame embarque un nonce 16 bits. La passerelle
+   mémorise le dernier nonce valide de chaque objet et refuse tout paquet
+   présentant un nonce déjà utilisé.
 
-Côté serveur, une **validation stricte** des commandes UDP (lettres autorisées : `{T, L, H, P}`,
-distinctes) empêche l'injection de commandes arbitraires sur l'UART depuis le réseau.
+Côté serveur, les commandes UDP sont validées strictement : seules les lettres
+`T`, `L`, `H`, `P` sans répétition sont acceptées, ce qui empêche d'injecter
+du texte arbitraire sur l'UART depuis le réseau.
 
 ---
 
-## 4. Mise en route rapide
+## 4. Prérequis
+
+- Python 3 + `pip install pyserial`
+- Docker (pour Grafana)
+- Android Studio (pour compiler l'app) ou l'APK directement
+- Environnement Yotta (pour compiler les firmwares micro:bit)
+
+## 5. Mise en route rapide
 
 L'ordre recommandé pour faire fonctionner l'architecture complète :
 
@@ -83,13 +96,13 @@ L'ordre recommandé pour faire fonctionner l'architecture complète :
    connecté au même réseau Wi-Fi que le PC (ou utiliser un émulateur avec `10.0.2.2`), puis renseigner
    l'IP du serveur et le port d'écoute (`10005` par défaut).
 
-Une fois la chaîne établie, le serveur affiche en console les trames déchiffrées, l'application
+Quand tout est lancé, le serveur affiche en console les trames déchiffrées, l'application
 Android peut demander les dernières valeurs (`getValues()`) et envoyer un ordre d'affichage (par exemple
 `TLH`) qui se propagera jusqu'à l'écran OLED de l'objet.
 
 ---
 
-## 5. Conventions et constantes partagées
+## 6. Conventions et constantes partagées
 
 Les valeurs suivantes doivent être **identiques** dans plusieurs modules pour que la chaîne fonctionne :
 
@@ -104,3 +117,10 @@ Les valeurs suivantes doivent être **identiques** dans plusieurs modules pour q
 
 > Si l'un de ces paramètres est modifié dans un module, il doit **impérativement** l'être dans les
 > autres modules concernés.
+
+## 7. EQUIPE
+ 
+- DAVID Manuel
+- BIGGERI Emmanuel
+- MOLY Pierre
+- CHBOUK Hicham

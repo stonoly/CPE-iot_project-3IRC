@@ -26,8 +26,9 @@ DB_FILE       = "iot_project.db"
 BACKUP_TXT    = "values.txt"
 
 ALLOWED_CHARS  = set("TLHP")
-latest_payload = b""
-thread_lock    = threading.Lock()
+latest_payload = b""  # dernière trame JSON reçue du micro:bit
+thread_lock    = threading.Lock() # évite que le thread UART et le thread UDP
+                                   # écrivent/lisent latest_payload en même temps
 
 # ============================================================
 # SÉCURITÉ UART
@@ -36,12 +37,16 @@ thread_lock    = threading.Lock()
 CLE_UART = bytes([0x55, 0x41, 0x52, 0x54, 0x32, 0x30, 0x32, 0x36])  # "UART2026"
 
 def xorshift32(etat):
+    # Les trois décalages XOR sont identiques à ceux du firmware C++ passerelle.
     etat ^= (etat << 13) & 0xFFFFFFFF
     etat ^= (etat >> 17) & 0xFFFFFFFF
     etat ^= (etat << 5)  & 0xFFFFFFFF
     return etat & 0xFFFFFFFF
 
 def initialiser_prng(cle, nonce):
+    # Construit l'état initial du PRNG à partir de la clé et du nonce.
+    # Comme le nonce change à chaque trame donc  deux trames avec le même
+    # contenu JSON produiront des octets chiffrés différents.
     etat = (
         (cle[0] << 24) ^
         (cle[1] << 16) ^
@@ -126,6 +131,8 @@ def lire_trame_uart(serial_conn):
     crc_calcule    = calculer_crc16(trame_sans_crc)
 
     if crc_calcule != crc_recu:
+        # Trame corrompue en transit ou paquet radio parasite, on l'ignore
+        # et on attend la suivante sans couper le serveur.
         print(f"[ERREUR] CRC16 invalide (reçu={crc_recu:#06x}, calculé={crc_calcule:#06x})")
         return None, None
 
@@ -189,11 +196,12 @@ def record_traffic_log(interface_type, comm_direction, target_details, raw_paylo
     run_sql_query(query, (interface_type, comm_direction, str(target_details), raw_payload, horodatage))
 
 def save_sensor_data(num_capteur, t_val, l_val, h_val, p_val):
+    # Le firmware envoie t et h en centièmes d'unité (ex: 2502 = 25.02°C)
+    # et p directement en hPa. On divise ici avant d'insérer en base.
     t_celsius = t_val / 100.0
     h_percent = h_val / 100.0
     p_hpa     = p_val / 100.0
 
-    # L'id réseau est construit depuis le numéro de capteur
     network_id = f"capteur_{num_capteur}"
 
     dev_id = get_or_register_device(network_id)
@@ -284,6 +292,9 @@ def transmit_serial_msg(gateway, text_command):
     print(f"[UART] -> Envoi vers Micro:bit : {text_command!r}")
 
 def check_format_validity(config_str):
+    # Vérifie que la commande reçue par UDP ne contient que T, L, H, P
+    # sans répétition. Ça évite qu'un client envoie n'importe quelle
+    # chaîne qui serait ensuite transmise telle quelle sur l'UART.
     if not config_str:
         return False
     formatted = config_str.upper()
