@@ -119,9 +119,9 @@
             "type": "frser-sqlite-datasource",
             "uid": "${datasource}"
           },
-          "queryText": "SELECT ts_unix AS time, val_temp AS value FROM Historique_Donnees ORDER BY time ASC LIMIT 50",
+          "queryText": "SELECT ts_unix AS time, val_temp AS value FROM Historique_Donnees ORDER BY time ASC",
           "queryType": "table",
-          "rawQueryText": "SELECT ts_unix AS time, val_temp AS value FROM Historique_Donnees ORDER BY time ASC LIMIT 50",
+          "rawQueryText": "SELECT ts_unix AS time, val_temp AS value FROM Historique_Donnees ORDER BY time ASC",
           "refId": "A",
           "timeColumns": [
             "time"
@@ -910,8 +910,8 @@
     ]
   },
   "timezone": "browser",
-  "title": "CPE IoT — Tableau de Bord Capteurs",
+  "title": "CPE IoT — Tableau de Bord Capteurs V2",
   "version": 1,
-  "uid": "adnxcqh",
-  "id": 3432672970702848
+  "uid": "ads288j",
+  "id": 3777015802298368
 }
