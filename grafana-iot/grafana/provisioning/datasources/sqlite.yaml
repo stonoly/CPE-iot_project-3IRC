@@ -1,11 +1,14 @@
-apiVersion: 1
+# Il configure automatiquement la source de données SQLite dans Grafana au démarrage 
+# sans ce fichier il faudrait la configurer manuellement dans l'interface.
 
-datasources:
-  - name: IoT-SQLite
-    type: frser-sqlite-datasource
-    access: proxy
-    isDefault: true
+apiVersion: 1 # Version format provisioning
+
+datasources: # liste source de données à config automatiquement 
+  - name: IoT-SQLite # nom dans grafana quand on sélectionne source de données 
+    type: frser-sqlite-datasource # plugin à utiliser, plugin sqlite installer depuis docker compose
+    access: proxy # grafana utilisé pour lire données 
+    isDefault: true # Source données sélectionnée par défaut pour tous panels
     jsonData:
-      path: /var/lib/grafana/data/iot_project.db
-    version: 1
-    editable: false
+      path: /var/lib/grafana/data/iot_project.db # chemin vers la base SQLite dans container. dossier monté ../serveur dans docker-compose.yml.
+    version: 1 # version config datasource, grafana utilise pour voir si config a changé
+    editable: false # modif datasource uniquement sur ce fichier 

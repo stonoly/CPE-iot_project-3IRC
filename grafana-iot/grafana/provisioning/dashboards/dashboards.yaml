@@ -1,10 +1,13 @@
-apiVersion: 1
+# Il indique à Grafana où trouver les fichiers JSON des dashboards pour les charger automatiquement au démarrage.
+
+apiVersion: 1 # Version format provisioning
 
 providers:
-  - name: IoT Dashboards
-    orgId: 1
-    type: file
-    disableDeletion: false
-    updateIntervalSeconds: 10
+  - name: IoT Dashboards # Nom provider 
+    orgId: 1 # Organisation grafana utilisé
+    type: file # dashboard chargé depuis fichier json
+    disableDeletion: false # si fichier json supprimé du dossier, dashboard correspondant aussi supprimé dans grafana
+    updateIntervalSeconds: 10 # Grafana vérifie toutes les 10 sec si iot_dashboard.json a changé et modifie automatiquement sans rédemarrer
     options:
-      path: /var/lib/grafana/dashboards
+      path: /var/lib/grafana/dashboards # Dossier dans container où Grafana cherche fichiers json des dashboards
+      # dossier monté ./grafana/dashboards dans le docker-compose.yml
