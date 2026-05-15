@@ -17,7 +17,7 @@ L'architecture globale du projet est la suivante :
 
 - Le capteur (micro:bit) collecte des données (température, luminosité, humidité, ...) et les envoie à la passerelle.
 - La passerelle relaie les données vers le serveur via le port série (UART).
-- Le serveur stocke les données et expose une interface UDP sur le port **10000** (par défaut).
+- Le serveur stocke les données et expose une interface UDP sur le port **10005** (par défaut).
 - **L'application Android** (ce dossier) communique avec le serveur en UDP pour :
   - demander les dernières valeurs collectées,
   - définir l'ordre d'affichage des données sur l'écran OLED du capteur,
@@ -31,7 +31,7 @@ L'application répond aux besoins listés dans le sujet :
 
 | Fonctionnalité                          | Description                                                                                              |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Choix du serveur de destination         | Saisie libre de l'adresse IP et du port du serveur (par défaut `10000`).                                 |
+| Choix du serveur de destination         | Saisie libre de l'adresse IP et du port du serveur (par défaut `10005`).                                 |
 | Envoi de l'ordre d'affichage            | Envoi d'une chaîne de lettres majuscules (`TLH`, `LTH`, `HLT`, ...) indiquant l'ordre d'affichage OLED.  |
 | Demande de rafraîchissement des valeurs | Bouton « Actualiser » qui envoie la requête `getValues()` au serveur (cf. protocole du sujet).           |
 | Réception des données                   | Écoute UDP non bloquante dans un thread dédié, affichage en temps réel des données reçues.               |
@@ -43,7 +43,7 @@ L'application répond aux besoins listés dans le sujet :
 
 L'écran principal (`activity_main.xml`) est composé de :
 
-1. **Adresse IP du serveur** + **Port** (champs éditables, valeurs par défaut `10.0.2.2` / `10000`).
+1. **Adresse IP du serveur** + **Port** (champs éditables, valeurs par défaut `10.0.2.2` / `10005`).
    - `10.0.2.2` est l'alias spécial pointant vers le `localhost` du PC hôte **depuis l'émulateur Android**.
    - Pour un téléphone physique, remplacer par l'IP locale du PC (ex : `192.168.1.42`).
 2. **Bouton « Démarrer / Arrêter la Réception »** : démarre ou arrête l'écoute UDP sur le port indiqué.
@@ -216,7 +216,7 @@ un émulateur.
    - l'**adresse IP** du serveur :
      - `10.0.2.2` si l'app tourne sur l'**émulateur** Android Studio (alias spécial vers le `localhost` du PC),
      - l'IP locale du PC (ex : `192.168.1.42`) si l'app tourne sur un **téléphone physique** sur le même Wi-Fi.
-   - le **port** d'écoute du serveur (par défaut `10000`).
+   - le **port** d'écoute du serveur (par défaut `10005`).
 4. Appuyer sur **« Démarrer la Réception »** : l'application crée le socket UDP, démarre les deux threads
    (`NetworkThread` + `NetworkReceiveThread`) et écoute les paquets UDP entrants. Le bouton passe en
    « Arrêter la Réception ».
