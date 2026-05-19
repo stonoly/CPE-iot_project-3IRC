@@ -1,5 +1,0 @@
-{
-    "image": "schoumi/yotta:latest",
-    "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-    "remoteUser": "root"
-}
