@@ -15,26 +15,36 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
-import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "IoT_App";
+
     private EditText ipEditText, portEditText, configEditText;
     private TextView receivedDataTextView;
     private Button connectButton, sendConfigButton, refreshButton;
 
-    private DatagramSocket rxSocket;
+    private final BlockingQueue<String> networkQueue = new LinkedBlockingQueue<>();
+    private NetworkThread threadNetwork;
+    private NetworkReceiveThread networkReceiveThread;
+    private DatagramSocket UDPSocket;
+
     private boolean isListening = false;
-    private final ExecutorService executorService = Executors.newFixedThreadPool(2);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    private final NetworkReceiveThread.MyThreadEventListener listener =
+            new NetworkReceiveThread.MyThreadEventListener() {
+                @Override
+                public void onEventInMyThread(String data) {
+                    mainHandler.post(() -> receivedDataTextView.setText(data));
+                }
+            };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -79,53 +89,57 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startListening() {
-        String portStr = portEditText.getText().toString();
+        String portStr = portEditText.getText().toString().trim();
         if (portStr.isEmpty()) {
             Toast.makeText(this, R.string.msg_missing_fields, Toast.LENGTH_SHORT).show();
             return;
         }
 
-        int port = Integer.parseInt(portStr);
+        int port;
+        try {
+            port = Integer.parseInt(portStr);
+        } catch (NumberFormatException e) {
+            Toast.makeText(this, R.string.msg_missing_fields, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        try {
+            UDPSocket = new DatagramSocket(null);
+            UDPSocket.setReuseAddress(true);
+            UDPSocket.bind(new InetSocketAddress(InetAddress.getByName("0.0.0.0"), port));
+        } catch (Exception e) {
+            Log.e(TAG, "Impossible d'ouvrir le socket UDP", e);
+            Toast.makeText(this, getString(R.string.msg_error_rx, e.getMessage()),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        threadNetwork = new NetworkThread(networkQueue, UDPSocket);
+        networkReceiveThread = new NetworkReceiveThread(UDPSocket, listener);
+        threadNetwork.start();
+        networkReceiveThread.start();
+
         isListening = true;
         connectButton.setText(R.string.btn_stop_rx);
-
-        executorService.execute(() -> {
-            try {
-                // Forçage IPv4 pour l'écoute
-                rxSocket = new DatagramSocket(null);
-                rxSocket.setReuseAddress(true);
-                rxSocket.bind(new InetSocketAddress(InetAddress.getByName("0.0.0.0"), port));
-
-                byte[] buffer = new byte[2048];
-                Log.d(TAG, "Démarrage écoute UDP IPv4 sur port " + port);
-
-                while (isListening) {
-                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                    rxSocket.receive(packet);
-                    String message = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
-
-                    mainHandler.post(() -> receivedDataTextView.setText(message));
-                }
-            } catch (Exception e) {
-                if (isListening) {
-                    Log.e(TAG, "Erreur de réception UDP", e);
-                    mainHandler.post(() -> Toast.makeText(MainActivity.this,
-                        getString(R.string.msg_error_rx, e.getMessage()), Toast.LENGTH_SHORT).show());
-                }
-            } finally {
-                if (rxSocket != null && !rxSocket.isClosed()) {
-                    rxSocket.close();
-                }
-            }
-        });
+        Log.d(TAG, "Écoute UDP démarrée sur le port " + port);
     }
 
     private void stopListening() {
         isListening = false;
-        if (rxSocket != null) {
-            rxSocket.close();
+
+        if (threadNetwork != null) {
+            threadNetwork.interrupt();
+            threadNetwork = null;
         }
+
+        if (UDPSocket != null && !UDPSocket.isClosed()) {
+            UDPSocket.close();
+        }
+        UDPSocket = null;
+
+        networkReceiveThread = null;
         connectButton.setText(R.string.btn_start_rx);
+        Log.d(TAG, "Écoute UDP arrêtée");
     }
 
     private void sendUDP(String message) {
@@ -137,39 +151,36 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        int port = Integer.parseInt(portStr);
+        if (!isListening || threadNetwork == null) {
+            Toast.makeText(this, R.string.msg_not_listening, Toast.LENGTH_SHORT).show();
+            return;
+        }
 
-        executorService.execute(() -> {
+        new Thread(() -> {
             try {
-                // Validation et forçage IPv4 pour l'envoi
                 InetAddress address = InetAddress.getByName(ip);
                 if (!(address instanceof Inet4Address)) {
-                    mainHandler.post(() -> Toast.makeText(MainActivity.this, "L'adresse doit être IPv4", Toast.LENGTH_SHORT).show());
+                    mainHandler.post(() -> Toast.makeText(MainActivity.this,
+                            "L'adresse doit être IPv4", Toast.LENGTH_SHORT).show());
                     return;
                 }
 
-                byte[] data = message.getBytes(StandardCharsets.UTF_8);
+                networkQueue.add(ip + ":" + portStr + ":" + message);
 
-                try (DatagramSocket socket = new DatagramSocket()) {
-                    DatagramPacket packet = new DatagramPacket(data, data.length, address, port);
-                    socket.send(packet);
-                    Log.d(TAG, "UDP envoyé vers " + address.getHostAddress() + ":" + port);
-
-                    mainHandler.post(() -> Toast.makeText(MainActivity.this,
-                        getString(R.string.msg_sent, message), Toast.LENGTH_SHORT).show());
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Erreur d'envoi UDP", e);
                 mainHandler.post(() -> Toast.makeText(MainActivity.this,
-                    getString(R.string.msg_error_send, e.getMessage()), Toast.LENGTH_SHORT).show());
+                        getString(R.string.msg_sent, message), Toast.LENGTH_SHORT).show());
+            } catch (Exception e) {
+                Log.e(TAG, "Erreur de résolution IP", e);
+                mainHandler.post(() -> Toast.makeText(MainActivity.this,
+                        getString(R.string.msg_error_send, e.getMessage()),
+                        Toast.LENGTH_SHORT).show());
             }
-        });
+        }).start();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
         stopListening();
-        executorService.shutdownNow();
     }
 }
