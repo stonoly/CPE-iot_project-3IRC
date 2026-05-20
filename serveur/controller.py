@@ -19,7 +19,7 @@ except ImportError:
 # ============================================================
 BIND_IP       = "0.0.0.0"
 LISTEN_PORT   = 10005
-COM_PORT      = "COM3"
+COM_PORT      = "COM4"
 BAUD_RATE     = 115200
 
 DB_FILE       = "iot_project.db"
@@ -204,8 +204,8 @@ def save_sensor_data(num_capteur, t_val, l_val, h_val, p_val):
     horodatage = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     run_sql_query(
-        "INSERT INTO Historique_Donnees (module_id, val_temp, val_lum, val_hum, val_pres, horodatage) VALUES (?, ?, ?, ?, ?, ?)",
-        (dev_id, t_celsius, l_val, h_percent, p_hpa, horodatage)
+        "INSERT INTO Historique_Donnees (module_id, val_temp, val_lum, val_hum, val_pres, horodatage, ts_unix) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (dev_id, t_celsius, l_val, h_percent, p_hpa, horodatage, int(time.time()))
     )
 
     print(f"[BDD] Capteur {num_capteur} ({horodatage}) -> Temp:{t_celsius}°C Hum:{h_percent}% Pres:{p_hpa}hPa Lum:{l_val}lux\n")
