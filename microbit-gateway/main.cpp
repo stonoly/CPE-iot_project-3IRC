@@ -62,11 +62,14 @@ static const uint8_t CLE_UART[8] = {
     0x32, 0x30, 0x32, 0x36   // "UART2026"
 };
 
-// ============================================================
-// PRNG XORSHIFT32
-// ============================================================
 static uint32_t etat_prng = 0;
+static uint16_t nonce_uart = 0;
 
+// ============================================================
+// Initialise le PRNG à partir des 4 premiers octets de la clé
+// et du nonce. Le nonce est mélangé deux fois pour éviter
+// qu'un état identique produise le même flux de masques.
+// ============================================================
 void initialiser_prng(const uint8_t* cle, uint16_t nonce) {
     etat_prng =
         ((uint32_t)cle[0] << 24) ^
@@ -81,6 +84,10 @@ void initialiser_prng(const uint8_t* cle, uint16_t nonce) {
     }
 }
 
+// ============================================================
+// Génère le prochain octet du flux pseudo-aléatoire.
+// Appelé une fois par octet à chiffrer/déchiffrer.
+// ============================================================
 uint32_t xorshift32() {
     uint32_t x = etat_prng;
     x ^= x << 13;
@@ -91,7 +98,8 @@ uint32_t xorshift32() {
 }
 
 // ============================================================
-// CRC16
+// CRC16 Modbus sur `taille` octets.
+// Utilisé pour détecter toute altération de la trame en transit.
 // ============================================================
 uint16_t calculer_crc16(uint8_t* data, int taille) {
     uint16_t crc = 0xFFFF;
@@ -108,13 +116,10 @@ uint16_t calculer_crc16(uint8_t* data, int taille) {
 }
 
 // ============================================================
-// NONCE UART
-// ============================================================
-static uint16_t nonce_uart = 0;
-
-// ============================================================
-// ENVOI UART CHIFFRÉ
-// JSON : {"id":1,"t":2502,"h":4267,"p":995,"l":50}
+// Construit et envoie une trame UART chiffrée au serveur Python.
+// Le JSON est chiffré octet par octet avec le flux XORSHIFT32
+// dérivé de CLE_UART + nonce_uart. Le nonce est incrémenté
+// après chaque envoi pour garantir un flux différent à chaque fois.
 // ============================================================
 void envoyer_uart_chiffre(
     uint8_t  num_capteur,
@@ -123,7 +128,6 @@ void envoyer_uart_chiffre(
     uint32_t p,
     uint32_t l
 ) {
-    // Construction JSON avec num_capteur
     char json[96];
     snprintf(
         json, sizeof(json),
@@ -137,44 +141,41 @@ void envoyer_uart_chiffre(
 
     uint8_t taille_payload = strlen(json);
 
-    // Construction trame UART
     uint8_t trame[128];
     trame[0] = 0xC3;
     memcpy(&trame[1], &nonce_uart, 2);
     trame[3] = taille_payload;
 
-    // Chiffrement XORSHIFT32 avec CLE_UART
     initialiser_prng(CLE_UART, nonce_uart);
     for (int i = 0; i < taille_payload; i++) {
         uint8_t masque = (uint8_t)(xorshift32() & 0xFF);
         trame[4 + i] = ((uint8_t)json[i]) ^ masque;
     }
 
-    // CRC16
     uint16_t crc = calculer_crc16(trame, 4 + taille_payload);
     memcpy(&trame[4 + taille_payload], &crc, 2);
 
-    int taille_totale = 4 + taille_payload + 2;
-
-    // Envoi UART binaire
-    uBit.serial.send((uint8_t*)trame, taille_totale);
+    uBit.serial.send((uint8_t*)trame, 4 + taille_payload + 2);
 
     nonce_uart++;
 }
 
 // ============================================================
-// RÉCEPTION RADIO DEPUIS LE CAPTEUR
+// Callback déclenché à chaque trame radio reçue.
+// Vérifie le CRC16, rejette les trames dupliquées via le nonce,
+// déchiffre le payload avec CLE_RADIO, puis relaie les données
+// vers le serveur via UART chiffré.
+// Envoie aussi la trame radio en clair (hex) sur l'UART avant
+// déchiffrement, pour démontrer les deux niveaux de chiffrement.
 // ============================================================
 void reception_trame_radio(MicroBitEvent) {
     uint8_t tampon_rx[32];
     int octets_recus = uBit.radio.datagram.recv(tampon_rx, 32);
 
-    // Vérification taille (21 octets) et identifiant
     if (octets_recus != 21 || tampon_rx[0] != 0xA1) {
         return;
     }
 
-    // --- Vérification CRC16 (sur les 19 premiers octets) ---
     uint16_t crc_recu;
     memcpy(&crc_recu, &tampon_rx[19], 2);
 
@@ -184,7 +185,6 @@ void reception_trame_radio(MicroBitEvent) {
         return;
     }
 
-    // --- Vérification anti-rejeu (nonce 2 octets) ---
     uint16_t nonce_recu;
     memcpy(&nonce_recu, &tampon_rx[1], 2);
 
@@ -199,14 +199,13 @@ void reception_trame_radio(MicroBitEvent) {
     premier_paquet = false;
     dernier_nonce  = nonce_recu;
 
-    // --- Affichage trame radio chiffrée (hex) pour démonstration ---
+    // Affichage du payload radio chiffré avant déchiffrement
     uBit.serial.printf("radio_chiffre: ");
     for (int i = 3; i < 19; i++) {
         uBit.serial.printf("%02X ", tampon_rx[i]);
     }
     uBit.serial.printf("\r\n");
 
-    // --- Déchiffrement XORSHIFT32 du payload radio ---
     uint8_t payload[16];
     initialiser_prng(CLE_RADIO, nonce_recu);
     for (int i = 0; i < 16; i++) {
@@ -214,7 +213,6 @@ void reception_trame_radio(MicroBitEvent) {
         payload[i] = tampon_rx[3 + i] ^ masque;
     }
 
-    // --- Extraction des valeurs ---
     uint8_t  num_capteur = payload[0];
     int32_t  val_temp;
     uint16_t val_hum;
@@ -226,10 +224,8 @@ void reception_trame_radio(MicroBitEvent) {
     memcpy(&val_press, &payload[7],  4);
     memcpy(&val_lum,   &payload[11], 4);
 
-    // --- Envoi UART chiffré vers le serveur Python ---
     envoyer_uart_chiffre(num_capteur, val_temp, val_hum, val_press, val_lum);
 
-    // Feedback LED
     uBit.display.image.setPixelValue(2, 2, 255);
     uBit.sleep(50);
     uBit.display.image.setPixelValue(2, 2, 0);
@@ -241,10 +237,8 @@ void reception_trame_radio(MicroBitEvent) {
 int main() {
     uBit.init();
 
-    // Nonce UART initialisé aléatoirement
     nonce_uart = uBit.random(65535);
 
-    // Radio
     uBit.radio.enable();
     uBit.radio.setGroup(RADIO_GROUP);
     uBit.messageBus.listen(
@@ -253,10 +247,13 @@ int main() {
         reception_trame_radio
     );
 
+    uBit.serial.setBaud(115200);
+
     uBit.display.scroll("GW SEC");
 
     while (true) {
-        // Réception commandes Python (config affichage)
+        // Réception d'une commande de config depuis Python (ex: "TLH")
+        // et relai chiffré vers le capteur concerné
         ManagedString instruction = uBit.serial.readUntil("\r\n");
 
         if (instruction.length() > 0) {
@@ -265,7 +262,6 @@ int main() {
             if (longueur_cmd <= 5) {
                 int taille_utile = (longueur_cmd > 4) ? 4 : longueur_cmd;
 
-                // Trame config : [0xB2][nonce_cfg 2o][payload XORé]
                 uint8_t tampon_tx[16];
                 tampon_tx[0] = 0xB2;
 
@@ -274,7 +270,6 @@ int main() {
 
                 const char* lettres = instruction.toCharArray();
 
-                // Chiffrement XORSHIFT32 avec CLE_RADIO
                 initialiser_prng(CLE_RADIO, nonce_cfg);
                 for (int i = 0; i < taille_utile; i++) {
                     uint8_t masque = (uint8_t)(xorshift32() & 0xFF);
