@@ -247,8 +247,6 @@ int main() {
         reception_trame_radio
     );
 
-    uBit.serial.setBaud(115200);
-
     uBit.display.scroll("GW SEC");
 
     while (true) {
